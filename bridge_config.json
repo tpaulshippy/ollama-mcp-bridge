@@ -39,6 +39,12 @@
       "env": {
         "REPLICATE_API_TOKEN": "${REPLICATE_API_TOKEN}"
       }
+    },
+    "gmail-drive": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": [
+        "C:\\Users\\patru\\AppData\\Roaming\\npm\\node_modules\\@patruff\\server-gmail-drive\\dist\\index.js"
+      ]
     }
   },
   "llm": {
@@ -48,5 +54,5 @@
     "temperature": 0.7,
     "maxTokens": 1000
   },
-  "systemPrompt": "You are a helpful assistant that can use various tools to help answer questions. You have access to multiple MCPs including filesystem operations, GitHub interactions, Brave search, and Flux for image generation. When using these tools, make sure to respect their specific requirements and limitations."
+  "systemPrompt": "You are a helpful assistant that can use various tools to help answer questions. You have access to multiple MCPs including filesystem operations, GitHub interactions, Brave search, Gmail, Google Drive, and Flux for image generation. When using these tools, make sure to respect their specific requirements and limitations."
 }

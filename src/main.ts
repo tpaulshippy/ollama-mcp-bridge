@@ -39,6 +39,9 @@ async function forceExit() {
   setTimeout(() => process.exit(0), 1000);
 }
 
+// Map to track which MCP owns which tools
+const toolToMCP = new Map<string, MCPLLMBridge>();
+
 async function main() {
   try {
     logger.info('Starting main.ts...');
@@ -68,9 +71,17 @@ async function main() {
       }
 
       bridges.set(mcpServerName, bridge);
+      
+      // Map each tool to its MCP
       if (bridge.tools) {
+        for (const tool of bridge.tools) {
+          const toolName = tool.function.name;
+          toolToMCP.set(toolName, bridge);
+          logger.debug(`Mapped tool '${toolName}' to MCP '${mcpServerName}'`);
+        }
         allTools.push(...bridge.tools);
       }
+      
       logger.info(`Bridge initialized successfully for ${mcpServerName}`);
     }
 
@@ -84,8 +95,13 @@ async function main() {
     logger.info('  Any other input will be sent to the LLM');
 
     let isClosing = false;
-    const primaryBridge = Array.from(bridges.values())[0];
-    await primaryBridge.setTools(allTools);
+    
+    // All bridges get the full tool list so they know what's available
+    for (const bridge of bridges.values()) {
+      await bridge.setTools(allTools);
+    }
+    
+    const primaryBridge = bridges.get('gmail-drive') || Array.from(bridges.values())[0];
     logger.info(`Total tools available: ${allTools.length}`);
 
     while (!isClosing) {
@@ -112,7 +128,13 @@ async function main() {
         }
 
         logger.info('Processing user input...');
-        const response = await primaryBridge.processMessage(userInput);
+        
+        // Detect which tool might be needed and route to appropriate bridge
+        const toolName = detectToolFromPrompt(userInput);
+        const selectedBridge = toolName ? toolToMCP.get(toolName) || primaryBridge : primaryBridge;
+        logger.info(`Using bridge for tool: ${toolName || 'default'}`);
+        
+        const response = await selectedBridge.processMessage(userInput);
         logger.info('Received response from bridge');
         console.log(`\nResponse: ${response}`);
       } catch (error: any) {
@@ -123,6 +145,41 @@ async function main() {
     logger.error(`Fatal error: ${error?.message || String(error)}`);
     process.exit(1);
   }
+}
+
+// Helper function to detect which tool might be needed
+function detectToolFromPrompt(prompt: string): string | null {
+  const emailKeywords = ['email', 'send', 'mail', 'message'];
+  const driveKeywords = ['drive', 'folder', 'file', 'upload'];
+  const searchKeywords = ['find', 'search', 'locate', 'list'];
+
+  prompt = prompt.toLowerCase();
+
+  if (emailKeywords.some(keyword => prompt.includes(keyword)) && 
+      prompt.includes('@')) {
+    return 'send_email';
+  }
+
+  if (searchKeywords.some(keyword => prompt.includes(keyword))) {
+    if (emailKeywords.some(keyword => prompt.includes(keyword))) {
+      return 'search_email';
+    }
+    if (driveKeywords.some(keyword => prompt.includes(keyword))) {
+      return 'search_drive';
+    }
+  }
+
+  if (driveKeywords.some(keyword => prompt.includes(keyword))) {
+    if (prompt.includes('folder') || prompt.includes('directory')) {
+      return 'create_folder';
+    }
+    if (prompt.includes('upload') || prompt.includes('create file')) {
+      return 'upload_file';
+    }
+    return 'search_drive';
+  }
+
+  return null;
 }
 
 process.on('SIGINT', () => {

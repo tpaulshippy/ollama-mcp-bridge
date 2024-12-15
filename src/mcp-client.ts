@@ -12,6 +12,7 @@ export class MCPClient {
   private nextMessageId: number = 1;
   private serverCapabilities?: any;
   private serverVersion?: any;
+  private availableTools: Set<string> = new Set();
 
   constructor(private serverParams: ServerParameters) {}
 
@@ -69,6 +70,7 @@ export class MCPClient {
       }
 
       await this.initialize();
+      await this.updateAvailableTools();
       logger.debug("[MCP Client] Connected successfully");
     } catch (error: any) {
       logger.error(`[MCP Client] Connection failed: ${error?.message || String(error)}`);
@@ -128,6 +130,16 @@ export class MCPClient {
     } catch (error: any) {
       logger.error(`[MCP Client] Session initialization failed: ${error?.message || String(error)}`);
       throw error;
+    }
+  }
+
+  private async updateAvailableTools(): Promise<void> {
+    try {
+      const tools = await this.getAvailableTools();
+      this.availableTools = new Set(tools.map(tool => tool.name));
+      logger.debug(`[MCP Client] Updated available tools: ${Array.from(this.availableTools).join(', ')}`);
+    } catch (error) {
+      logger.error('[MCP Client] Failed to update available tools:', error);
     }
   }
 
@@ -217,6 +229,11 @@ export class MCPClient {
 
     logger.debug(`[MCP Client] Calling tool '${toolName}' with args: ${JSON.stringify(toolArgs)}`);
     
+    // Check if the tool exists
+    if (!this.availableTools.has(toolName)) {
+      logger.error(`[MCP Client] Unknown tool '${toolName}'. Available tools: ${Array.from(this.availableTools).join(', ')}`);
+    }
+
     try {
       const message = {
         jsonrpc: "2.0",
@@ -249,6 +266,7 @@ export class MCPClient {
     this.stdin = null;
     this.stdout = null;
     this.initialized = false;
+    this.availableTools.clear();
     
     logger.debug("[MCP Client] Connection closed");
   }

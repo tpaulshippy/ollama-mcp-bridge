@@ -23,8 +23,13 @@ export interface BridgeConfig {
 
 export interface Tool {
   name: string;
-  description: string;
-  inputSchema: {
+  description?: string;
+  parameters?: {
+    type: string;
+    properties: Record<string, any>;
+    required?: string[];
+  };
+  inputSchema?: {
     type: string;
     properties: Record<string, any>;
     required?: string[];
