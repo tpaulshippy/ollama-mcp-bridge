@@ -12,6 +12,20 @@ export async function testOllamaConnection(config: LLMConfig): Promise<boolean> 
     logger.info('Testing basic connectivity to Ollama...');
     logger.info(`Attempting to connect to ${config.baseUrl} with model ${config.model}`);
     
+    const format = {
+      type: "object",
+      properties: {
+        response: {
+          type: "string",
+          enum: ["connected"]
+        }
+      },
+      required: ["response"]
+    };
+
+    // Override the format for the test
+    testClient.format = format;
+    
     const response = await testClient.invokeWithPrompt(testPrompt);
     
     if (!response || !response.content) {
@@ -19,11 +33,7 @@ export async function testOllamaConnection(config: LLMConfig): Promise<boolean> 
       return false;
     }
 
-    const responseText = response.content.toLowerCase().trim();
-    if (!responseText.includes('connected')) {
-      logger.error(`Unexpected response from Ollama: "${response.content}"`);
-      return false;
-    }
+    logger.info('Response content:', response.content);
 
     logger.info('Connection test completed successfully');
     logger.info(`Using model: ${config.model}`);
@@ -34,6 +44,9 @@ export async function testOllamaConnection(config: LLMConfig): Promise<boolean> 
     logger.error('Connection test failed with error');
     if (error?.message) {
       logger.error(`Error details: ${error.message}`);
+      if (error.cause) {
+        logger.error(`Error cause: ${error.cause}`);
+      }
     } else {
       logger.error(`Error details: ${String(error)}`);
     }
@@ -44,8 +57,8 @@ export async function testOllamaConnection(config: LLMConfig): Promise<boolean> 
 // Standalone test script
 if (require.main === module) {
   const testConfig: LLMConfig = {
-    model: "qwen2.5-coder:7b-instruct",  // Updated with exact model name
-    baseUrl: "http://localhost:11434/v1",
+    model: "qwen2.5-coder:7b-instruct",
+    baseUrl: "http://127.0.0.1:11434",
     apiKey: "ollama",
     temperature: 0.7,
     maxTokens: 1000

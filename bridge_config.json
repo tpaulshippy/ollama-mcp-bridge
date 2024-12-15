@@ -43,7 +43,7 @@
   },
   "llm": {
     "model": "qwen2.5-coder:7b-instruct",
-    "baseUrl": "http://localhost:11434/v1",
+    "baseUrl": "http://localhost:11434",
     "apiKey": "ollama",
     "temperature": 0.7,
     "maxTokens": 1000

@@ -30,11 +30,3 @@ export interface Tool {
     required?: string[];
   };
 }
-
-export interface ToolCall {
-  id: string;
-  function: {
-    name: string;
-    arguments: string;
-  };
-}

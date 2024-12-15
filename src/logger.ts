@@ -1,5 +1,5 @@
 import winston from 'winston';
-import chalk, { Chalk } from 'chalk';
+import chalk from 'chalk';
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug';
 
@@ -58,7 +58,7 @@ export const logger = winston.createLogger({
   ),
   transports: [
     new winston.transports.Console({
-      level: 'info'
+      level: 'debug' // Changed to 'debug' to show more output
     })
   ]
 });
