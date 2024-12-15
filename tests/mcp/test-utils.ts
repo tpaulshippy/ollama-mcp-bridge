@@ -5,17 +5,125 @@ import { promisify } from 'util';
 const execAsync = promisify(exec);
 
 export const OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
-export const MODEL_NAME = 'qwen2.5-coder:7b-instruct';  // Back to 7B model
+export const MODEL_NAME = 'qwen2.5-coder:7b-instruct';
 export const TEST_TIMEOUT = 300000; // 5 minutes
 export const HOOK_TIMEOUT = 30000;  // 30 seconds for hooks
-export const REQUEST_TIMEOUT = 180000; // 3 minutes per request
+export const REQUEST_TIMEOUT = 300000; // 5 minutes per request
+
+// Define the expected tool formats based on MCP schema patterns
+export const TOOL_FORMATS = {
+  search_email: {
+    type: "object",
+    properties: {
+      name: { type: "string", enum: ["search_email"] },
+      arguments: {
+        type: "object",
+        properties: {
+          query: { 
+            type: "string",
+            description: "Search query for emails"
+          },
+          limit: {
+            type: "number",
+            description: "Maximum number of results to return",
+            default: 10
+          }
+        },
+        required: ["query"]
+      }
+    },
+    required: ["name", "arguments"]
+  },
+  search_drive: {
+    type: "object",
+    properties: {
+      name: { type: "string", enum: ["search_drive"] },
+      arguments: {
+        type: "object",
+        properties: {
+          query: { 
+            type: "string",
+            description: "Search query for Google Drive files"
+          }
+        },
+        required: ["query"]
+      }
+    },
+    required: ["name", "arguments"]
+  },
+  create_folder: {
+    type: "object",
+    properties: {
+      name: { type: "string", enum: ["create_folder"] },
+      arguments: {
+        type: "object",
+        properties: {
+          name: { 
+            type: "string",
+            description: "Name of the folder to create"
+          }
+        },
+        required: ["name"]
+      }
+    },
+    required: ["name", "arguments"]
+  },
+  send_email: {
+    type: "object",
+    properties: {
+      name: { type: "string", enum: ["send_email"] },
+      arguments: {
+        type: "object",
+        properties: {
+          to: { 
+            type: "string",
+            description: "Email address of the recipient"
+          },
+          subject: { 
+            type: "string",
+            description: "Subject of the email"
+          },
+          body: { 
+            type: "string",
+            description: "Content of the email"
+          }
+        },
+        required: ["to", "subject", "body"]
+      }
+    },
+    required: ["name", "arguments"]
+  },
+  upload_file: {
+    type: "object",
+    properties: {
+      name: { type: "string", enum: ["upload_file"] },
+      arguments: {
+        type: "object",
+        properties: {
+          name: { 
+            type: "string",
+            description: "Name of the file to create"
+          },
+          content: { 
+            type: "string",
+            description: "Content of the file"
+          },
+          mimeType: { 
+            type: "string",
+            description: "MIME type of the file"
+          }
+        },
+        required: ["name", "content", "mimeType"]
+      }
+    },
+    required: ["name", "arguments"]
+  }
+};
 
 export async function killOllama() {
   try {
     console.log('Killing Ollama processes...');
-    // Kill any existing Ollama processes
     await execAsync('taskkill /F /IM ollama.exe').catch(() => {});
-    // Kill any processes using port 11434
     const { stdout } = await execAsync('netstat -ano | findstr ":11434"').catch(() => ({ stdout: '' }));
     const pids = stdout.split('\n')
       .map(line => line.trim().split(/\s+/).pop())
@@ -25,7 +133,7 @@ export async function killOllama() {
       await execAsync(`taskkill /F /PID ${pid}`).catch(() => {});
     }
     
-    await new Promise(resolve => setTimeout(resolve, 5000)); // Longer wait
+    await new Promise(resolve => setTimeout(resolve, 5000));
     console.log('Ollama processes killed');
   } catch (e) {
     console.log('No Ollama processes found to kill');
@@ -36,7 +144,6 @@ export async function startOllama(): Promise<ChildProcess> {
   console.log('Starting Ollama server...');
   const ollamaProcess = exec('ollama serve', { windowsHide: true });
   
-  // Add event listeners for better process management
   ollamaProcess.on('error', (error) => {
     console.error('Error starting Ollama:', error);
   });
@@ -46,21 +153,30 @@ export async function startOllama(): Promise<ChildProcess> {
   });
 
   ollamaProcess.stderr?.on('data', (data) => {
-    console.log('Ollama stderr:', data.toString());
+    console.error('Ollama stderr:', data.toString());
   });
 
-  // Wait longer for server to start
   await new Promise(resolve => setTimeout(resolve, 10000));
   console.log('Ollama server started');
   return ollamaProcess;
 }
 
-export async function makeOllamaRequest(payload: any) {
+export async function makeOllamaRequest(payload: any, toolFormat: any) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
   try {
-    console.log('Making request to Ollama with payload:', JSON.stringify(payload, null, 2));
+    // Add the format parameter to enforce structured output
+    const requestPayload = {
+      ...payload,
+      format: toolFormat,
+      options: {
+        ...payload.options,
+        temperature: 0 // Set to 0 for more deterministic output
+      }
+    };
+
+    console.log('Making request to Ollama with payload:', JSON.stringify(requestPayload, null, 2));
     const startTime = Date.now();
     
     const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
@@ -68,7 +184,7 @@ export async function makeOllamaRequest(payload: any) {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(requestPayload),
       signal: controller.signal
     });
 
@@ -81,7 +197,7 @@ export async function makeOllamaRequest(payload: any) {
     }
 
     const result = await response.json();
-    console.log('Received response:', JSON.stringify(result, null, 2));
+    console.log('Raw response:', JSON.stringify(result, null, 2));
     return result;
   } catch (error) {
     if (error instanceof Error) {
@@ -98,18 +214,22 @@ export async function makeOllamaRequest(payload: any) {
 
 export function parseToolResponse(result: any) {
   try {
-    const content = result.message.content.trim();
-    console.log('Parsing content:', content);
-    
-    // Handle common formatting issues
-    let jsonStr = content
-      .replace(/\`\`\`json\n?/g, '')
-      .replace(/\n?\`\`\`/g, '')
-      .trim();
+    if (!result?.message?.content) {
+      console.error('Invalid response structure:', result);
+      throw new Error('Invalid response structure');
+    }
 
-    return JSON.parse(jsonStr);
+    const content = result.message.content;
+    
+    // If content is already an object (from structured output), return it
+    if (typeof content === 'object') {
+      return content;
+    }
+
+    // Otherwise parse it (fallback for older Ollama versions)
+    return JSON.parse(content.trim());
   } catch (e) {
-    console.error('Failed to parse response as JSON:', result.message.content);
+    console.error('Failed to parse response:', result?.message?.content);
     throw e;
   }
 }
@@ -122,7 +242,6 @@ export async function cleanupProcess(process: ChildProcess | null) {
       if (process.pid) {
         await execAsync(`taskkill /F /PID ${process.pid}`).catch(() => {});
       }
-      // Also clean up any remaining port usage
       const { stdout } = await execAsync('netstat -ano | findstr ":11434"').catch(() => ({ stdout: '' }));
       const pids = stdout.split('\n')
         .map(line => line.trim().split(/\s+/).pop())

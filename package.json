@@ -12,6 +12,7 @@
     "test:brave": "jest tests/mcp/brave.test.ts --runInBand --detectOpenHandles --forceExit",
     "test:github": "jest tests/mcp/github.test.ts --runInBand --detectOpenHandles --forceExit",
     "test:memory": "jest tests/mcp/memory.test.ts --runInBand --detectOpenHandles --forceExit",
+    "test:gmail-drive": "jest tests/mcp/gmail-drive.test.ts --runInBand --detectOpenHandles --forceExit",
     "reset-ollama": "ts-node src/ollama-manager.ts"
   },
   "dependencies": {
