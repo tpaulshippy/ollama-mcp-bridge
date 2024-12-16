@@ -61,6 +61,7 @@ npm install -g @patruff/server-gmail-drive
    - Set `GITHUB_PERSONAL_ACCESS_TOKEN` for GitHub
    - Set `REPLICATE_API_TOKEN` for Flux
    - Run Gmail/Drive MCP auth: `node path/to/gmail-drive/index.js auth`
+   - For example node C:\Users\patru\AppData\Roaming\npm\node_modules\@patruff\server-gmail-drive\dist\index.js auth
 
 ## Configuration
 
