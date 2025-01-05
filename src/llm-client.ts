@@ -3,6 +3,7 @@ import { logger } from './logger';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { DynamicToolRegistry } from './tool-registry';
+import { toolSchemas } from './types/tool-schemas';
 
 const execAsync = promisify(exec);
 
@@ -35,6 +36,7 @@ export class LLMClient {
   public tools: any[] = [];
   private messages: any[] = [];
   public systemPrompt: string | null = null;
+  private readonly toolSchemas: typeof toolSchemas = toolSchemas;
   private static REQUEST_TIMEOUT = 300000; // 5 minutes
 
   constructor(config: LLMConfig) {
@@ -249,12 +251,27 @@ export class LLMClient {
         }
       };
 
-      // Add format schema if a tool is detected and registry is available
-      if (this.currentTool && this.toolRegistry) {
-        const format = this.toolRegistry.getToolFormat(this.currentTool);
-        if (format) {
-          payload.format = format;
+      // Add structured output format if a tool is detected
+      if (this.currentTool) {
+        const toolSchema = this.currentTool ? this.toolSchemas[this.currentTool as keyof typeof toolSchemas] : null;
+        if (toolSchema) {
+          payload.format = {
+            type: "object",
+            properties: {
+              name: {
+                type: "string",
+                const: this.currentTool
+              },
+              arguments: toolSchema,
+              thoughts: {
+                type: "string",
+                description: "Your thoughts about using this tool"
+              }
+            },
+            required: ["name", "arguments", "thoughts"]
+          };
           logger.debug('Added format schema for tool:', this.currentTool);
+          logger.debug('Schema:', JSON.stringify(payload.format, null, 2));
         }
       }
 
@@ -294,34 +311,28 @@ export class LLMClient {
 
       let isToolCall = false;
       let toolCalls: ToolCall[] = [];
-      let content = completion.message.content;
+      let content: any = completion.message.content;
 
+      // Parse the structured response
       try {
-        const contentStr = typeof content === 'string' ? content : JSON.stringify(content);
-        const cleanContent = contentStr.trim()
-          .replace(/\`\`\`json\n?/g, '')
-          .replace(/\n?\`\`\`/g, '')
-          .trim();
-
-        if (cleanContent.startsWith('{')) {
-          const parsedContent = JSON.parse(cleanContent);
-          
-          // Check for name format
-          if (parsedContent.name && parsedContent.arguments) {
-            isToolCall = true;
-            toolCalls = [{
-              id: `call-${Date.now()}`,
-              function: {
-                name: parsedContent.name,
-                arguments: JSON.stringify(parsedContent.arguments)
-              }
-            }];
-            content = parsedContent.thoughts || "Using tool...";
-            logger.debug('Parsed tool call:', { toolCalls });
-          }
+        // Handle both string and object responses
+        const contentObj = typeof content === 'string' ? JSON.parse(content) : content;
+        
+        // Check if response matches our structured format
+        if (contentObj.name && contentObj.arguments) {
+          isToolCall = true;
+          toolCalls = [{
+            id: `call-${Date.now()}`,
+            function: {
+              name: contentObj.name,
+              arguments: JSON.stringify(contentObj.arguments)
+            }
+          }];
+          content = contentObj.thoughts || "Using tool...";
+          logger.debug('Parsed structured tool call:', { toolCalls });
         }
       } catch (e) {
-        logger.debug('Response is not a tool call:', e);
+        logger.debug('Response is not a structured tool call:', e);
       }
 
       const result = {
