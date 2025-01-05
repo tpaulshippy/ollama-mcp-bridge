@@ -2,6 +2,7 @@ import { type LLMConfig } from './types';
 import { logger } from './logger';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { DynamicToolRegistry } from './tool-registry';
 
 const execAsync = promisify(exec);
 
@@ -29,6 +30,7 @@ interface ToolResponse {
 
 export class LLMClient {
   private config: LLMConfig;
+  private toolRegistry: DynamicToolRegistry | null = null;
   private currentTool: string | null = null;
   public tools: any[] = [];
   private messages: any[] = [];
@@ -42,42 +44,9 @@ export class LLMClient {
     logger.debug(`Initializing Ollama client with baseURL: ${this.config.baseUrl}`);
   }
 
-  private getToolFormat(toolName: string) {
-    return {
-      type: "object",
-      properties: {
-        name: { type: "string", enum: [toolName] },
-        arguments: {
-          type: "object",
-          properties: {
-            ...(toolName === "search_email" && {
-              query: { type: "string", description: "Search query for emails" }
-            }),
-            ...(toolName === "search_drive" && {
-              query: { type: "string", description: "Search query for files" }
-            }),
-            ...(toolName === "create_folder" && {
-              name: { type: "string", description: "Name of the folder" }
-            }),
-            ...(toolName === "send_email" && {
-              to: { type: "string", description: "Email address of recipient" },
-              subject: { type: "string", description: "Email subject" },
-              body: { type: "string", description: "Email content" }
-            }),
-            ...(toolName === "upload_file" && {
-              name: { type: "string", description: "Name of the file" },
-              content: { type: "string", description: "File content" },
-              mimeType: { type: "string", description: "MIME type of file" }
-            })
-          },
-          required: toolName === "send_email" ? ["to", "subject", "body"] :
-                   toolName === "upload_file" ? ["name", "content", "mimeType"] :
-                   toolName === "create_folder" ? ["name"] :
-                   ["query"]
-        }
-      },
-      required: ["name", "arguments"]
-    };
+  setToolRegistry(registry: DynamicToolRegistry) {
+    this.toolRegistry = registry;
+    logger.debug('Tool registry set with tools:', registry.getAllTools());
   }
 
   public async listTools(): Promise<void> {
@@ -216,14 +185,13 @@ export class LLMClient {
       throw new Error('Failed to start Ollama after 10 attempts');
     }
 
-    // Extract likely tool name from prompt
-    const toolNames = ["search_email", "search_drive", "create_folder", "send_email", "upload_file"];
-    this.currentTool = toolNames.find(tool => 
-      prompt.toLowerCase().includes(tool.replace("_", " ")) ||
-      prompt.toLowerCase().includes(tool.replace("_", ""))
-    ) || null;
+    // Detect tool using registry if available
+    if (this.toolRegistry) {
+      this.currentTool = this.toolRegistry.detectToolFromPrompt(prompt);
+      logger.debug(`Detected tool from registry: ${this.currentTool}`);
+    }
 
-    logger.debug(`Preparing to send prompt: ${prompt}, detected tool: ${this.currentTool}`);
+    logger.debug(`Preparing to send prompt: ${prompt}`);
     this.messages = [];
     this.messages.push({
       role: 'user',
@@ -281,9 +249,13 @@ export class LLMClient {
         }
       };
 
-      // Add format schema if a tool is detected
-      if (this.currentTool) {
-        payload.format = this.getToolFormat(this.currentTool);
+      // Add format schema if a tool is detected and registry is available
+      if (this.currentTool && this.toolRegistry) {
+        const format = this.toolRegistry.getToolFormat(this.currentTool);
+        if (format) {
+          payload.format = format;
+          logger.debug('Added format schema for tool:', this.currentTool);
+        }
       }
 
       logger.debug('Preparing Ollama request with payload:', JSON.stringify(payload, null, 2));
@@ -325,9 +297,16 @@ export class LLMClient {
       let content = completion.message.content;
 
       try {
-        // If we got an object back (from format parameter), extract tool call
-        if (typeof content === 'object') {
-          const parsedContent = content as ToolResponse;
+        const contentStr = typeof content === 'string' ? content : JSON.stringify(content);
+        const cleanContent = contentStr.trim()
+          .replace(/\`\`\`json\n?/g, '')
+          .replace(/\n?\`\`\`/g, '')
+          .trim();
+
+        if (cleanContent.startsWith('{')) {
+          const parsedContent = JSON.parse(cleanContent);
+          
+          // Check for name format
           if (parsedContent.name && parsedContent.arguments) {
             isToolCall = true;
             toolCalls = [{
@@ -338,23 +317,7 @@ export class LLMClient {
               }
             }];
             content = parsedContent.thoughts || "Using tool...";
-            logger.debug('Using formatted response:', { toolCalls });
-          }
-        } 
-        // Otherwise try to parse JSON from string
-        else if (typeof content === 'string' && content.trim().startsWith('{')) {
-          const parsedContent = JSON.parse(content.trim()) as ToolResponse;
-          if (parsedContent.name && parsedContent.arguments) {
-            isToolCall = true;
-            toolCalls = [{
-              id: `call-${Date.now()}`,
-              function: {
-                name: parsedContent.name,
-                arguments: JSON.stringify(parsedContent.arguments)
-              }
-            }];
-            content = parsedContent.thoughts || "Using tool...";
-            logger.debug('Parsed JSON response:', { toolCalls });
+            logger.debug('Parsed tool call:', { toolCalls });
           }
         }
       } catch (e) {

@@ -1,7 +1,12 @@
 import { MCPClient } from './mcp-client';
 import { LLMClient } from './llm-client';
 import { logger } from './logger';
-import { BridgeConfig, Tool } from './types';
+import { BridgeConfig, Tool, ServerParameters } from './types';
+import { DynamicToolRegistry } from './tool-registry';
+
+interface MCPMap {
+  [key: string]: MCPClient;
+}
 
 export interface MCPLLMBridge {
   tools: any[];
@@ -14,119 +19,59 @@ export interface MCPLLMBridge {
 
 export class MCPLLMBridge implements MCPLLMBridge {
   private config: BridgeConfig;
-  private mcpClient: MCPClient;
+  private mcpClients: MCPMap = {};
+  private toolToMcp: { [toolName: string]: MCPClient } = {};
+  private toolRegistry: DynamicToolRegistry;
   public llmClient: LLMClient;
-  private toolNameMapping: Map<string, string> = new Map();
   public tools: any[] = [];
 
   constructor(private bridgeConfig: BridgeConfig) {
     this.config = bridgeConfig;
-    this.mcpClient = new MCPClient(bridgeConfig.mcpServer);
+    // Primary MCP client
+    this.mcpClients['primary'] = new MCPClient(bridgeConfig.mcpServer);
     this.llmClient = new LLMClient(bridgeConfig.llmConfig);
-  }
+    this.toolRegistry = new DynamicToolRegistry();
 
-  private detectToolFromPrompt(prompt: string): string | null {
-    const emailKeywords = ['email', 'send', 'mail', 'message'];
-    const driveKeywords = ['drive', 'folder', 'file', 'upload'];
-    const searchKeywords = ['find', 'search', 'locate', 'list'];
-
-    prompt = prompt.toLowerCase();
-
-    if (emailKeywords.some(keyword => prompt.includes(keyword)) && 
-        prompt.includes('@')) {
-      return 'send_email';
+    // Initialize other MCP clients if available
+    if (bridgeConfig.mcpServers) {
+      Object.entries(bridgeConfig.mcpServers).forEach(([name, config]) => {
+        if (name !== bridgeConfig.mcpServerName) { // Skip primary as it's already initialized
+          this.mcpClients[name] = new MCPClient(config);
+        }
+      });
     }
-
-    if (searchKeywords.some(keyword => prompt.includes(keyword))) {
-      if (emailKeywords.some(keyword => prompt.includes(keyword))) {
-        return 'search_email';
-      }
-      if (driveKeywords.some(keyword => prompt.includes(keyword))) {
-        return 'search_drive';
-      }
-    }
-
-    if (driveKeywords.some(keyword => prompt.includes(keyword))) {
-      if (prompt.includes('folder') || prompt.includes('directory')) {
-        return 'create_folder';
-      }
-      if (prompt.includes('upload') || prompt.includes('create file')) {
-        return 'upload_file';
-      }
-      return 'search_drive';
-    }
-
-    return null;
-  }
-
-  private getToolInstructions(detectedTool: string): string {
-    const baseInstructions = `You are a helpful assistant that can interact with Gmail and Google Drive.
-Always respond with ONLY a JSON object in the correct format for the tool being used.
-Do not add any other text outside the JSON.
-
-`;
-
-    const toolFormats = {
-      search_email: `When searching emails, format:
-{
-  "name": "search_email",
-  "arguments": {
-    "query": "search query"
-  }
-}`,
-      
-      search_drive: `When searching Drive files, format:
-{
-  "name": "search_drive",
-  "arguments": {
-    "query": "search query"
-  }
-}`,
-      
-      create_folder: `When creating folders in Drive, format:
-{
-  "name": "create_folder",
-  "arguments": {
-    "name": "folder name"
-  }
-}`,
-      
-      send_email: `When sending emails, format:
-{
-  "name": "send_email",
-  "arguments": {
-    "to": "recipient@example.com",
-    "subject": "email subject",
-    "body": "email content"
-  }
-}`,
-      
-      upload_file: `When uploading files to Drive, format:
-{
-  "name": "upload_file",
-  "arguments": {
-    "name": "filename",
-    "content": "file content",
-    "mimeType": "text/plain"
-  }
-}`
-    };
-
-    return baseInstructions + toolFormats[detectedTool as keyof typeof toolFormats];
   }
 
   async initialize(): Promise<boolean> {
     try {
-      logger.info('Connecting to MCP server...');
-      await this.mcpClient.connect();
-      logger.info('MCP server connected. Getting available tools...');
+      logger.info('Connecting to MCP servers...');
       
-      const mcpTools = await this.mcpClient.getAvailableTools();
-      logger.info(`Received ${mcpTools.length} tools from MCP server`);
+      // Initialize all MCP clients
+      for (const [name, client] of Object.entries(this.mcpClients)) {
+        logger.info(`Connecting to MCP: ${name}`);
+        await client.connect();
+        
+        const mcpTools = await client.getAvailableTools();
+        logger.info(`Received ${mcpTools.length} tools from ${name}`);
+        
+        // Register tools and map them to this MCP
+        mcpTools.forEach(tool => {
+          this.toolRegistry.registerTool(tool);
+          this.toolToMcp[tool.name] = client;
+          logger.debug(`Registered tool ${tool.name} from ${name}`);
+        });
+
+        // Convert and add to tools list
+        const convertedTools = this.convertMCPToolsToOpenAIFormat(mcpTools);
+        this.tools.push(...convertedTools);
+      }
+
+      // Set tools in LLM client
+      this.llmClient.tools = this.tools;
+      this.llmClient.setToolRegistry(this.toolRegistry);
       
-      const convertedTools = this.convertMCPToolsToOpenAIFormat(mcpTools);
-      this.tools = convertedTools;
-      this.llmClient.tools = convertedTools;
+      logger.info(`Initialized with ${this.tools.length} total tools`);
+      logger.debug('Available tools:', this.tools.map(t => t.function.name).join(', '));
       
       return true;
     } catch (error: any) {
@@ -136,44 +81,49 @@ Do not add any other text outside the JSON.
   }
 
   private convertMCPToolsToOpenAIFormat(mcpTools: Tool[]): any[] {
-    return mcpTools.map(tool => ({
-      type: 'function',
-      function: {
-        name: tool.name,
-        description: tool.description || `Use the ${tool.name} tool`,
-        parameters: {
-          type: "object",
-          properties: tool.inputSchema?.properties || {},
-          required: tool.inputSchema?.required || []
+    return mcpTools.map(tool => {
+      const converted = {
+        type: 'function',
+        function: {
+          name: tool.name,
+          description: tool.description || `Use the ${tool.name} tool`,
+          parameters: {
+            type: "object",
+            properties: tool.inputSchema?.properties || {},
+            required: tool.inputSchema?.required || []
+          }
         }
-      }
-    }));
+      };
+      logger.debug(`Converted tool ${tool.name}:`, JSON.stringify(converted, null, 2));
+      return converted;
+    });
   }
 
   async processMessage(message: string): Promise<string> {
     try {
-      const detectedTool = this.detectToolFromPrompt(message);
+      const detectedTool = this.toolRegistry.detectToolFromPrompt(message);
       logger.info(`Detected tool: ${detectedTool}`);
 
       if (detectedTool) {
-        this.llmClient.systemPrompt = this.getToolInstructions(detectedTool);
-      } else {
-        this.llmClient.systemPrompt = this.config.systemPrompt || null;
+        const instructions = this.toolRegistry.getToolInstructions(detectedTool);
+        if (instructions) {
+          this.llmClient.systemPrompt = instructions;
+          logger.debug('Using tool-specific instructions:', instructions);
+        }
       }
 
       logger.info('Sending message to LLM...');
       let response = await this.llmClient.invokeWithPrompt(message);
       logger.info(`LLM response received, isToolCall: ${response.isToolCall}`);
+      logger.debug('Raw LLM response:', JSON.stringify(response, null, 2));
 
       while (response.isToolCall && response.toolCalls?.length) {
         logger.info(`Processing ${response.toolCalls.length} tool calls`);
-        
         const toolResponses = await this.handleToolCalls(response.toolCalls);
         logger.info('Tool calls completed, sending results back to LLM');
         response = await this.llmClient.invoke(toolResponses);
       }
 
-      logger.info('Final response ready');
       return response.content;
     } catch (error: any) {
       const errorMsg = error?.message || String(error);
@@ -190,13 +140,17 @@ Do not add any other text outside the JSON.
         const requestedName = toolCall.function.name;
         logger.debug(`[MCP] Looking up tool name: ${requestedName}`);
 
+        // Get appropriate MCP client for this tool
+        const mcpClient = this.toolToMcp[requestedName];
+        if (!mcpClient) {
+          throw new Error(`No MCP found for tool: ${requestedName}`);
+        }
+
         logger.info(`[MCP] About to call MCP tool: ${requestedName}`);
         let toolArgs = JSON.parse(toolCall.function.arguments);
-
         logger.info(`[MCP] Tool arguments prepared: ${JSON.stringify(toolArgs)}`);
         
-        // Add timeout to MCP call
-        const mcpCallPromise = this.mcpClient.callTool(requestedName, toolArgs);
+        const mcpCallPromise = mcpClient.callTool(requestedName, toolArgs);
         const timeoutPromise = new Promise((_, reject) => {
           setTimeout(() => reject(new Error('MCP call timed out after 30 seconds')), 30000);
         });
@@ -204,6 +158,7 @@ Do not add any other text outside the JSON.
         logger.info(`[MCP] Sending call to MCP...`);
         const result = await Promise.race([mcpCallPromise, timeoutPromise]);
         logger.info(`[MCP] Received response from MCP`);
+        logger.debug(`[MCP] Tool result:`, result);
         
         toolResponses.push({
           tool_call_id: toolCall.id,
@@ -225,10 +180,22 @@ Do not add any other text outside the JSON.
   async setTools(tools: any[]): Promise<void> {
     this.tools = tools;
     this.llmClient.tools = tools;
-    logger.debug('Updated tools:', tools.map(t => t.function.name));
+    this.toolRegistry = new DynamicToolRegistry();
+    
+    tools.forEach(tool => {
+      if (tool.function) {
+        this.toolRegistry.registerTool({
+          name: tool.function.name,
+          description: tool.function.description,
+          inputSchema: tool.function.parameters
+        });
+      }
+    });
   }
 
   async close(): Promise<void> {
-    await this.mcpClient.close();
+    for (const client of Object.values(this.mcpClients)) {
+      await client.close();
+    }
   }
 }

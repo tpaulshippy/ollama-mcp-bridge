@@ -15,7 +15,10 @@ export interface LLMConfig {
 }
 
 export interface BridgeConfig {
-  mcpServer: ServerParameters;
+  mcpServer: ServerParameters;        // Primary MCP
+  mcpServers?: {                     // All MCPs including Flux, etc.
+    [key: string]: ServerParameters;
+  };
   mcpServerName: string;
   llmConfig: LLMConfig;
   systemPrompt?: string;
@@ -23,15 +26,20 @@ export interface BridgeConfig {
 
 export interface Tool {
   name: string;
-  description?: string;
-  parameters?: {
+  description: string;
+  inputSchema: {
     type: string;
     properties: Record<string, any>;
     required?: string[];
   };
-  inputSchema?: {
-    type: string;
-    properties: Record<string, any>;
-    required?: string[];
-  };
+}
+
+export interface MCPToolMetadata {
+  keywords: string[];   // Keywords that trigger this tool
+  exampleArgs: any;     // Example arguments for this tool
+  formatInstructions: string; // Specific format instructions
+}
+
+export interface ToolRegistry {
+  [toolName: string]: MCPToolMetadata;
 }
