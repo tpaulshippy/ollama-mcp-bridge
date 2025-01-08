@@ -207,7 +207,6 @@ export class LLMClient {
     try {
       if (toolResults.length > 0) {
         for (const result of toolResults) {
-          // Convert MCP response to proper Ollama tool call format
           const toolOutput = result.output;
           try {
             const parsedOutput = JSON.parse(toolOutput);
@@ -243,13 +242,29 @@ export class LLMClient {
       const messages = this.prepareMessages();
       const payload: any = {
         model: this.config.model,
-        messages,
+        messages: [],  // Start with an empty array for structured messages
         stream: false,
         options: {
           temperature: this.config.temperature || 0,
           num_predict: this.config.maxTokens || 1000
         }
       };
+
+      // Add the messages
+      for (const message of messages) {
+        if (message.role === 'tool') {
+          payload.messages.push({
+            role: message.role,
+            content: message.content,
+            tool_call_id: message.tool_call_id
+          });
+        } else {
+          payload.messages.push({
+            role: message.role,
+            content: message.content
+          });
+        }
+      }
 
       // Add structured output format if a tool is detected
       if (this.currentTool) {
@@ -276,7 +291,7 @@ export class LLMClient {
       }
 
       logger.debug('Preparing Ollama request with payload:', JSON.stringify(payload, null, 2));
-      
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => {
         controller.abort();
@@ -315,10 +330,12 @@ export class LLMClient {
 
       // Parse the structured response
       try {
-        // Handle both string and object responses
+        if (typeof content === 'string' && content.startsWith('```json')) {
+          content = content.replace(/^```json/, '').replace(/```$/, '').trim();
+          logger.debug('Cleaned Markdown response:', content);
+        }
         const contentObj = typeof content === 'string' ? JSON.parse(content) : content;
         
-        // Check if response matches our structured format
         if (contentObj.name && contentObj.arguments) {
           isToolCall = true;
           toolCalls = [{
