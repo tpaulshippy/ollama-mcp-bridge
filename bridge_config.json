@@ -6,6 +6,7 @@
         "/usr/lib/node_modules/@modelcontextprotocol/server-filesystem/dist/index.js",
         "/home/fq2103/mcp_workspace"
       ]
+  }
   },
   "llm": {
     "model": "deepseek-v2:16b",
