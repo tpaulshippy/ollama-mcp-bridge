@@ -47,13 +47,15 @@ export const logger = winston.createLogger({
   levels: customLevels.levels,
   format: winston.format.combine(
     winston.format.timestamp(),
-    winston.format.printf(({ level, message }) => {
+    winston.format.printf(({ level, message, ...rest }) => {
       const color = customLevels.colors[level as LogLevel];
       const colorFn = chalkColors[color];
       const levelStr = colorFn(level.toUpperCase());
       const nameStr = chalkColors.cyan('LLMBridge');
       const timeStr = chalkColors.gray(getFormattedTime());
-      return `${timeStr} ${levelStr}:     ${nameStr} - ${message}`;
+      const metaStr = Object.keys(rest).length ? ` ${JSON.stringify(rest)}` : '';
+
+      return `${timeStr} ${levelStr}:     ${nameStr} - ${message}${metaStr}`;
     })
   ),
   transports: [

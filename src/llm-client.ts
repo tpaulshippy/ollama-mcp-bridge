@@ -155,41 +155,20 @@ export class LLMClient {
     return formattedMessages;
   }
 
-	async invokeWithPrompt(prompt: string) {
-    if (!this.ollamaProcess) {
-        logger.debug('Starting new Ollama instance...');
-        this.ollamaProcess = exec('ollama serve', { windowsHide: true });
-
-        this.ollamaProcess.stdout?.on('data', (data) => {
-            logger.debug('Ollama stdout:', data.toString());
-        });
-
-        this.ollamaProcess.stderr?.on('data', (data) => {
-            logger.debug('Ollama stderr:', data.toString());
-        });
-
-        this.ollamaProcess.on('error', (error) => {
-            logger.error('Error starting Ollama:', error);
-        });
-
-        this.ollamaProcess.unref();
-
-        let connected = false;
-        for (let i = 0; i < 10; i++) {
-            logger.debug(`Waiting for Ollama to start (attempt ${i + 1}/10)...`);
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            if (await this.testConnection()) {
-                logger.debug('Ollama is ready and responding');
-                connected = true;
-                break;
-            }
-        }
-
-        if (!connected) {
-            throw new Error('Failed to start Ollama after 10 attempts');
-        }
-    } else {
-        logger.debug('Reusing existing Ollama instance...');
+  async invokeWithPrompt(prompt: string) {
+    let connected = false;
+    for (let i = 0; i < 10; i++) {
+      logger.debug(`Waiting for Ollama to start (attempt ${i + 1}/10)...`);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      if (await this.testConnection()) {
+        logger.debug('Ollama is ready and responding');
+        connected = true;
+        break;
+      }
+    }
+    
+    if (!connected) {
+      throw new Error('Failed to start Ollama after 10 attempts');
     }
 
     // Detect tool using registry if available
@@ -326,8 +305,13 @@ export class LLMClient {
       }
 
       logger.debug('Response received from Ollama, parsing...');
-      const completion = await response.json() as OllamaResponse;
-      logger.debug('Parsed response:', completion);
+      const responseText = await response.text();
+      logger.debug('Raw response:', responseText);
+      // Filter out ```json and ```
+      const filteredResponse = responseText.replace(/```json|```/g, '');
+      logger.debug('Filtered response:', filteredResponse);
+
+      const completion = JSON.parse(filteredResponse) as OllamaResponse;
 
       let isToolCall = false;
       let toolCalls: ToolCall[] = [];
